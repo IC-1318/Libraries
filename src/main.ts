@@ -7,11 +7,11 @@ import { escapeHtml } from "./html";
 import {
   normalizeQuality,
   qualityPresets,
+  superPerformanceQuality,
   type QualityPreset,
   type RenderQuality,
 } from "./render-quality";
 import { qualityMarkup, syncQualityUI } from "./quality-settings";
-import { superPerformanceQuality, wallpaperQuality } from "./wallpaper-quality";
 import "@kitlangton/rolling-number/styles.css";
 import "./style.css";
 import "./quality-settings.css";
@@ -51,24 +51,9 @@ import {
   type StoredMotion,
 } from "./motion-preferences";
 import { StartupGate } from "./startup";
-import {
-  isWallpaper,
-  wallpaperHost,
-  wallpaperFrame,
-  type WallpaperProperties,
-} from "./wallpaper";
 import "./startup.css";
-import "./wallpaper.css";
-import { Workbench } from "./workbench";
-let workbench: Workbench | undefined;
-import { ArchivePlayground } from "./archive-playground";
-import { ARRAY_OPENING_END, openingShowsDetail } from "./wallpaper-opening";
 import { paintTheme, themeSettingsMarkup } from "./theme-ui";
-let playground: ArchivePlayground | undefined;
-import { WallpaperEffects } from "./wallpaper-effects";
-import { WallpaperBackground } from "./wallpaper-background";
 import { enableGamepad, isGamepadEvent, onInputDevice } from "./gamepad";
-let wallpaperEffects: WallpaperEffects | undefined;
 
 const $ = <T extends HTMLElement = HTMLElement>(selector: string) =>
   document.querySelector<T>(selector)!;
@@ -108,7 +93,7 @@ $("#stage").innerHTML = `
     <article id="detail-content" class="detail-content"></article>
   </section>
   <div class="powered">POWERED BY <b>RHINE LAB</b><i></i></div>
-  <footer class="system-footer"><span><i class="status-light"></i> SESSION AUTHORIZED${isWallpaper ? '<button type="button" class="three-toggle" data-action="toggle-three" aria-pressed="true" title="卸载三维模型，保留 2D 界面">3D 开启</button>' : ""}</span><span>JOYCE MOORE <i>／</i> <span id="clock">00:00:00</span></span><button data-action="replay" title="重播启动流程">REINITIALIZE ↗</button></footer>
+  <footer class="system-footer"><span><i class="status-light"></i> SESSION AUTHORIZED</span><span>JOYCE MOORE <i>／</i> <span id="clock">00:00:00</span></span><button data-action="replay" title="重播启动流程">REINITIALIZE ↗</button></footer>
   <div id="pwa-update-notice" class="pwa-update-notice" role="status" hidden><span>新版本已就绪</span><button data-pwa-action="update">更新并重启 ↻</button></div>
   <div id="modal-root"></div><div id="toast" class="toast" role="status"></div>
   <div id="loading" class="loading"><div class="loading-mark">${logo}</div><span>CONNECTING TO INTERNAL DATABASE</span><i></i></div>
@@ -278,9 +263,8 @@ const rollingTitles = [
 const selectedCode = createRollingNumber($("#selected-code"), codeOptions);
 const hoverCode = createRollingNumber($("#hover-code"), codeOptions);
 const audio = new TerminalAudio();
-let musicSuppressed = false;
 function configureAudio() {
-  audio.configure({ ...prefs, music: prefs.music && !musicSuppressed });
+  audio.configure({ ...prefs });
 }
 configureAudio();
 const reviewEntry =
@@ -295,7 +279,7 @@ $("#viewport").append(loading);
 $("#stage").inert = true;
 $(".mobile-entry").inert = true;
 const entry =
-  !isWallpaper && !reviewEntry && (prefs.sound || prefs.music)
+  !reviewEntry && (prefs.sound || prefs.music)
     ? new StartupGate({
         root: loading,
         unlock: () => audio.unlock(),
@@ -313,9 +297,6 @@ if (entry) {
 let audioPreview = false,
   audioPreviewRequest = 0;
 let scene: ArchiveScene | undefined;
-let threeState: "on" | "closing" | "off" | "loading" = "on";
-let resumeCell: { lane: number; row: number } | undefined;
-let resumeSelection = -1;
 let viewer: ModelViewer | undefined;
 const accessLog: { id: string; time: string }[] = [];
 const columnMemory = archiveColumns.map((_, lane) => columnFiles(lane)[0]);
@@ -332,9 +313,7 @@ function saveAudioPrefs() {
   configureAudio();
 }
 function superPerformanceEnabled() {
-  return isWallpaper
-    ? wallpaperHost()?.properties.superperformance?.value === true
-    : prefs.superPerformance;
+  return prefs.superPerformance;
 }
 function effectiveRenderQuality() {
   return superPerformanceEnabled() ? superPerformanceQuality : prefs.rendering;
@@ -395,9 +374,7 @@ function savePrefs() {
     "reduce-surfaces",
     !motionActive("surfaceTransitions"),
   );
-  workbench?.setMotion(prefs.motion);
   updateFooterClock(new Date(), motionActive("rollingNumbers"));
-  syncWallpaperBackground();
 }
 let previousLayout = "";
 function fit() {
@@ -482,7 +459,6 @@ const fileTicks = [
 ];
 
 function setMode(next: Mode) {
-  if (workbench?.enabled && next === "detail") next = "archive";
   const previousMode = mode;
   rollingTitles.forEach((title) =>
     title.update({
@@ -496,7 +472,6 @@ function setMode(next: Mode) {
   }
   if (next === "detail" && mode !== "detail") recordAccess();
   mode = next;
-  syncWallpaperBackground();
   audio.setScene(next);
   if (next !== "boot" && audioPreview) {
     audioPreview = false;
@@ -504,15 +479,13 @@ function setMode(next: Mode) {
     configureAudio();
   }
   $("#stage").dataset.mode = next;
-  workbench?.syncVisibility();
   if (previousMode !== next) fit();
   $("#boot").inert = next !== "boot";
   $("#boot").setAttribute("aria-hidden", String(next !== "boot"));
-  $("#archive-ui").inert =
-    next !== "archive" || Boolean(modal) || Boolean(workbench?.enabled);
+  $("#archive-ui").inert = next !== "archive" || Boolean(modal);
   $("#archive-ui").setAttribute(
     "aria-hidden",
-    String(next !== "archive" || Boolean(workbench?.enabled)),
+    String(next !== "archive"),
   );
   $(".system-nav").inert = next === "boot" || Boolean(modal);
   $(".system-footer").inert = next === "boot" || Boolean(modal);
@@ -790,7 +763,7 @@ function closeModal(afterClose?: () => void) {
     modalTransition = undefined;
     modalSiblings.forEach(({ node, inert }) => (node.inert = inert));
     modalSiblings = [];
-    $("#archive-ui").inert = mode !== "archive" || Boolean(workbench?.enabled);
+    $("#archive-ui").inert = mode !== "archive";
     $("#detail-ui").inert = mode !== "detail";
     previousFocus?.focus({ preventScroll: true });
     afterClose?.();
@@ -863,7 +836,7 @@ function motionPreferenceNoteMarkup() {
   return `<div id="motion-preference-note" class="motion-preference-note"><p>${motionSummary(prefs.motion)}</p><span>预设：${preset === "full" ? "完整动画" : preset === "reduced" ? "减少动画" : "自定义"} · 选择会保存在本站</span>${allEnabled ? "" : '<button data-action="enable-motion">启用完整动画并重播 ↻</button>'}</div>`;
 }
 function settingsMarkup() {
-  return `<h2>SYSTEM SETTINGS<small>终端偏好设置</small></h2><p class="settings-intro">JOYCE MOORE <span>·</span> SESSION AUTHORIZED</p>${isWallpaper ? '<p class="wallpaper-settings-note">每次启动都会读取 Wallpaper Engine 中的设置。在此修改仅对当前运行生效，无法持久保存；如需保留，请在 Wallpaper Engine 的壁纸属性中调整。</p>' : ""}<div class="settings-list">${themeSettingsMarkup(prefs.colorTheme === "dark")}${!isWallpaper ? `<label><div><strong>SUPER PERFORMANCE</strong><span>降低三维画质和渲染分辨率，保留完整动效；关闭后恢复原画质</span></div><input type="checkbox" data-pref="superPerformance" ${prefs.superPerformance ? "checked" : ""}/><i class="toggle"></i></label>` : ""}${workbench?.settingsMarkup() ?? ""}${audioSettingsMarkup(prefs)}</div>${motionPreferenceNoteMarkup()}${motionSettingsMarkup(prefs.motion, prefs.motionPreset)}${qualityMarkup(prefs.rendering)}${pwaSettingsMarkup()}<div class="settings-shortcuts">${isWallpaper ? "<span>DESKTOP CONTROLS</span><p>拖动阵列或点击界面按钮浏览档案。桌面模式下，方向键与滚轮可能无法传入壁纸。</p>" : "<span>KEYBOARD CONTROLS</span><p><kbd>←</kbd><kbd>→</kbd> 切列 <kbd>↑</kbd><kbd>↓</kbd> 选档 <kbd>ENTER</kbd> 读取 <kbd>/</kbd> 检索 <kbd>ESC</kbd> 返回</p>"}</div><div class="settings-bottom">${!isWallpaper && document.fullscreenEnabled ? '<button data-action="fullscreen">FULLSCREEN <span>↗</span></button>' : ""}<button data-action="restart">REINITIALIZE SYSTEM <span>↻</span></button></div><div class="modal-bottom"><span>ANALYSIS OS / 1.0 · 使用 MiSans 字体（小米） <a href="${assetUrl("fonts/MiSans-license.pdf")}" target="_blank" rel="noopener">字体许可</a></span><span>POWERED BY RHINE LAB</span></div>`;
+  return `<h2>SYSTEM SETTINGS<small>终端偏好设置</small></h2><p class="settings-intro">JOYCE MOORE <span>·</span> SESSION AUTHORIZED</p><div class="settings-list">${themeSettingsMarkup(prefs.colorTheme === "dark")}<label><div><strong>SUPER PERFORMANCE</strong><span>降低三维画质和渲染分辨率，保留完整动效；关闭后恢复原画质</span></div><input type="checkbox" data-pref="superPerformance" ${prefs.superPerformance ? "checked" : ""}/><i class="toggle"></i></label>${audioSettingsMarkup(prefs)}</div>${motionPreferenceNoteMarkup()}${motionSettingsMarkup(prefs.motion, prefs.motionPreset)}${qualityMarkup(prefs.rendering)}${pwaSettingsMarkup()}<div class="settings-shortcuts"><span>KEYBOARD CONTROLS</span><p><kbd>←</kbd><kbd>→</kbd> 切列 <kbd>↑</kbd><kbd>↓</kbd> 选档 <kbd>ENTER</kbd> 读取 <kbd>/</kbd> 检索 <kbd>ESC</kbd> 返回</p></div><div class="settings-bottom">${document.fullscreenEnabled ? '<button data-action="fullscreen">FULLSCREEN <span>↗</span></button>' : ""}<button data-action="restart">REINITIALIZE SYSTEM <span>↻</span></button></div><div class="modal-bottom"><span>ANALYSIS OS / 1.0 · 使用 MiSans 字体（小米） <a href="${assetUrl("fonts/MiSans-license.pdf")}" target="_blank" rel="noopener">字体许可</a></span><span>POWERED BY RHINE LAB</span></div>`;
 }
 
 document.addEventListener("input", (e) => {
@@ -1013,10 +986,6 @@ document.addEventListener("click", (e) => {
     return;
   }
   const action = el.dataset.action;
-  if (action === "toggle-three") {
-    void toggleThree();
-    return;
-  }
   if (action === "sound-preview") audio.play("confirm");
   if (action === "skip") {
     setMode("archive");
@@ -1089,24 +1058,6 @@ document.addEventListener("click", (e) => {
 document.addEventListener("keydown", (e) => {
   if (!started) return;
   if (viewer?.isOpen) return;
-  if (playground?.active && !modal) {
-    if (e.key === "Escape") {
-      e.preventDefault();
-      playground.stop();
-    } else if (
-      [
-        "ArrowLeft",
-        "ArrowRight",
-        "ArrowUp",
-        "ArrowDown",
-        "Enter",
-        "/",
-      ].includes(e.key) &&
-      !(e.target instanceof HTMLButtonElement)
-    )
-      e.preventDefault();
-    return;
-  }
   if (modalClosing) {
     e.preventDefault();
     return;
@@ -1198,34 +1149,8 @@ const ease = (t: number) => {
   return t * t * (3 - 2 * t);
 };
 function bootFrame(t: number) {
-  if (isWallpaper && !scene && frozenTime === null && t >= 21.9) {
-    setMode("archive");
-    return undefined;
-  }
-  if (
-    isWallpaper &&
-    frozenTime === null &&
-    t >= ARRAY_OPENING_END &&
-    !openingShowsDetail(
-      wallpaperHost()?.properties.openingdetail?.value,
-      !!workbench?.enabled,
-    )
-  ) {
-    setMode("archive");
-    return undefined;
-  }
   audio.updateBoot(t, frozenTime !== null);
   const motion = bootSequence.update(t);
-  if (workbench?.enabled && frozenTime === null) {
-    const end = openingShowsDetail(
-      wallpaperHost()?.properties.openingdetail?.value,
-      true,
-    )
-      ? 35
-      : ARRAY_OPENING_END;
-    if (t > end - 0.35)
-      $(".powered").style.opacity = String(1 - ease((t - end + 0.35) / 0.35));
-  }
   let step: string = motion.step;
   if (t >= 22) {
     step = "array";
@@ -1272,35 +1197,22 @@ let lastTime = 0,
   frameStart = performance.now(),
   fps = 0;
 function frame(ms: number) {
-  if (!wallpaperFrame(ms)) {
-    requestAnimationFrame(frame);
-    return;
-  }
   if (document.hidden) {
     requestAnimationFrame(frame);
     return;
   }
-  workbench?.tick();
   const time = ms / 1000;
   const theme = scene?.themeAmount ?? (prefs.colorTheme === "dark" ? 1 : 0);
   paintTheme(theme);
   viewer?.setTheme(theme);
-  playground?.tick(time);
   const cinema =
     mode === "boot" && ready
       ? bootFrame(frozenTime ?? time - bootStart)
       : undefined;
-  wallpaperEffects?.update(
-    time,
-    motionIsReduced(),
-    motionActive("pointerParallax"),
-  );
   // The calibrated 2D opening fully covers the scene until array entry.
   if (!viewer?.isOpen && (!cinema || cinema.time >= 21.9))
     scene?.update(time, cinema);
   viewer?.update(time);
-  if (threeState === "closing" && scene?.presentationHidden) releaseThree();
-  playground?.position();
   if (scene && mode === "detail") {
     documentDecryption.update(
       time,
@@ -1349,11 +1261,11 @@ function frame(ms: number) {
   }
   requestAnimationFrame(frame);
 }
-function bindScene(scene: ArchiveScene, cell?: { lane: number; row: number }) {
-  scene.select(selected, cell ? { cell } : undefined);
-  scene.onSelect = (i, cell) => {
+function bindScene(scene: ArchiveScene) {
+  scene.select(selected);
+  scene.onSelect = (i) => {
     if (mode !== "archive" || modal || viewer?.isOpen) return;
-    select(i, cell ? { cell } : undefined);
+    select(i);
   };
   scene.onNavigate = (axis, direction) => {
     if (mode !== "archive" || modal || viewer?.isOpen) return;
@@ -1385,114 +1297,12 @@ function bindScene(scene: ArchiveScene, cell?: { lane: number; row: number }) {
     hoverTitle.update({ animated });
   };
 }
-function syncThreeButton() {
-  $("#stage").dataset.threeState = threeState;
-  syncWallpaperBackground();
-  const button = document.querySelector<HTMLButtonElement>(
-    '[data-action="toggle-three"]',
-  );
-  if (!button) return;
-  button.textContent =
-    threeState === "loading"
-      ? "3D 载入中…"
-      : threeState === "closing"
-        ? "3D 关闭中…"
-        : threeState === "off"
-          ? "3D 关闭"
-          : "3D 开启";
-  button.disabled = threeState === "loading";
-  button.setAttribute("aria-pressed", String(threeState === "on"));
-  button.title =
-    threeState === "off"
-      ? "重新载入三维模型"
-      : threeState === "closing"
-        ? "取消关闭，恢复三维画面"
-        : "卸载三维模型，保留 2D 界面";
-}
-function releaseThree() {
-  if (!scene) return;
-  resumeCell = { ...scene.getStats().selectedCell };
-  resumeSelection = selected;
-  viewer?.dispose();
-  viewer = undefined;
-  scene.dispose();
-  scene = undefined;
-  if (mode === "detail") {
-    $("#detail-content").style.opacity = "1";
-    $("#detail-content").style.translate = "0 0";
-    $("#detail-content").inert = false;
-    documentDecryption.reset($("#detail-content"), true);
-  }
-  threeState = "off";
-  syncThreeButton();
-  $("#hover-label").hidden = true;
-  delete $("#three-scene").dataset.renderQuality;
-  updateQualitySummary();
-}
-async function toggleThree() {
-  if (!isWallpaper || !ready || threeState === "loading") return;
-  if (threeState === "closing") {
-    scene?.setPresentationVisible(true, !motionActive("surfaceTransitions"));
-    threeState = "on";
-    syncThreeButton();
-    return;
-  }
-  if (scene) {
-    playground?.stop();
-    threeState = "closing";
-    syncThreeButton();
-    scene.setPresentationVisible(false, !motionActive("surfaceTransitions"));
-    if (!motionActive("surfaceTransitions")) releaseThree();
-    return;
-  }
-  threeState = "loading";
-  syncThreeButton();
-  let next: ArchiveScene | undefined;
-  try {
-    next = new ArchiveScene($("#three-scene"));
-    next.renderer.domElement.style.opacity = "0";
-    next.setPresentationVisible(false, true);
-    await next.load();
-    next.setMode(mode === "detail" ? "detail" : "archive");
-    bindScene(next, resumeSelection === selected ? resumeCell : undefined);
-    next.revealImmediately();
-    scene = next;
-    scene.setTheme(prefs.colorTheme === "dark", true);
-    scene.setArchiveCoverage(
-      wallpaperHost()?.properties.archivecoverage?.value === "extra",
-    );
-    savePrefs();
-    scene.setPresentationVisible(true, !motionActive("surfaceTransitions"));
-    threeState = "on";
-    syncThreeButton();
-  } catch (error) {
-    next?.dispose();
-    scene = undefined;
-    threeState = "off";
-    syncThreeButton();
-    notify("三维模型载入失败，请点击 3D 关闭重试。");
-    console.error(error);
-  }
-}
-
 async function start() {
   try {
-    if (isWallpaper) await window.rhineWallpaperPropertiesReady;
-    if (
-      !isWallpaper ||
-      wallpaperHost()?.properties.load3donstartup?.value !== false
-    ) {
-      scene = new ArchiveScene($("#three-scene"));
-      scene.setTheme(prefs.colorTheme === "dark", true);
-      scene.setArchiveCoverage(
-        wallpaperHost()?.properties.archivecoverage?.value === "extra",
-      );
-    } else {
-      threeState = "off";
-      syncThreeButton();
-    }
+    scene = new ArchiveScene($("#three-scene"));
+    scene.setTheme(prefs.colorTheme === "dark", true);
     await Promise.all([
-      scene?.load(),
+      scene.load(),
       loadBootWebfonts(),
       // With unicode-range faces, preload the opening's actual characters,
       // not every font shard. Other archive text loads on demand.
@@ -1513,21 +1323,12 @@ async function start() {
         "RHINE LAB WELCOME TO INTERNAL DATABASE",
       ),
     ]);
-    if (scene) bindScene(scene);
+    bindScene(scene);
     savePrefs();
     ready = true;
     select(0);
     if (entry) entry.ready();
-    else {
-      if (isWallpaper) {
-        // CEF allows automatic audio; never block the visual on audio policy or decoding.
-        await Promise.race([
-          audio.unlock(),
-          new Promise((resolve) => setTimeout(resolve, 3000)),
-        ]);
-      }
-      completeStartup(false);
-    }
+    else completeStartup(false);
   } catch (error) {
     console.error(error);
     $("#loading").innerHTML =
@@ -1556,8 +1357,6 @@ function completeStartup(silent: boolean) {
   )
     setMode("archive");
   if (reviewParams.get("scene") === "detail") setMode("detail");
-  if (isWallpaper && wallpaperHost()?.properties.boot?.value === false)
-    setMode("archive");
   $("#stage").inert = false;
   $(".mobile-entry").inert = false;
   loading.classList.add("loaded");
@@ -1584,146 +1383,6 @@ function completeStartup(silent: boolean) {
   setTimeout(() => void initPwa(notify), 1500);
 }
 updateSelection();
-const customBackground = isWallpaper
-  ? new WallpaperBackground($("#stage"), notify)
-  : undefined;
-function syncWallpaperBackground(retry = false) {
-  customBackground?.update(
-    wallpaperHost()?.properties ?? {},
-    mode !== "boot" && (threeState === "off" || threeState === "loading"),
-    !motionActive("surfaceTransitions"),
-    retry,
-  );
-}
-if (isWallpaper) {
-  const apply = (properties: WallpaperProperties) => {
-    const theme = properties.colortheme?.value;
-    if (theme === "light" || theme === "dark") prefs.colorTheme = theme;
-    scene?.setArchiveCoverage(
-      properties.archivecoverage?.value === "extra" ||
-        wallpaperHost()?.properties.archivecoverage?.value === "extra",
-    );
-    for (const key of ["sound", "music"] as const)
-      if (typeof properties[key]?.value === "boolean")
-        prefs[key] = properties[key].value as boolean;
-    if (typeof properties.reduced?.value === "boolean") {
-      prefs.motion = properties.reduced.value ? reducedMotion() : fullMotion();
-      prefs.motionPreset = motionPresetFor(prefs.motion);
-    }
-    for (const key of ["soundVolume", "musicVolume"] as const) {
-      const value = properties[key.toLowerCase()]?.value;
-      if (typeof value === "number" && Number.isFinite(value))
-        prefs[key] = Math.max(0, Math.min(1, value / 100));
-    }
-    const qualityProperties = { ...wallpaperHost()?.properties, ...properties };
-    if (
-      Object.keys(properties).some(
-        (key) => key === "renderquality" || key.startsWith("quality"),
-      )
-    )
-      prefs.rendering = wallpaperQuality(qualityProperties, prefs.rendering);
-    savePrefs();
-    if (
-      properties.customwallpaperfile ||
-      properties.customwallpaper?.value === true
-    )
-      syncWallpaperBackground(true);
-    if (properties.boot?.value === false && started && mode === "boot")
-      setMode("archive");
-    // Keep an already-open settings surface in sync without replacing focused controls.
-    document
-      .querySelectorAll<HTMLInputElement>("[data-pref]")
-      .forEach((input) => {
-        const key = input.dataset.pref as
-          "sound" | "music" | "quality" | "superPerformance";
-        if (key in prefs) input.checked = prefs[key];
-      });
-    document
-      .querySelectorAll<HTMLInputElement>("[data-motion]")
-      .forEach((input) => {
-        input.checked = prefs.motion[input.dataset.motion as MotionKey];
-      });
-    document
-      .querySelectorAll<HTMLElement>('[data-action="motion-preset"]')
-      .forEach((button) => {
-        button.setAttribute(
-          "aria-pressed",
-          String(button.dataset.preset === prefs.motionPreset),
-        );
-      });
-    const note = document.querySelector("#motion-preference-note");
-    if (note) note.outerHTML = motionPreferenceNoteMarkup();
-    for (const key of ["soundVolume", "musicVolume"] as const) {
-      const input = document.querySelector<HTMLInputElement>(
-        `[data-volume="${key}"]`,
-      );
-      if (input) {
-        input.value = String(Math.round(prefs[key] * 100));
-        input
-          .closest("label")
-          ?.querySelector("output")
-          ?.replaceChildren(`${input.value}%`);
-      }
-    }
-  };
-  window.addEventListener("rhine-wallpaper-properties", (event) =>
-    apply((event as CustomEvent<WallpaperProperties>).detail),
-  );
-  let pausedAt: number | undefined;
-  const pause = () => {
-    const paused = wallpaperHost()?.paused ?? false;
-    if (paused && pausedAt === undefined) pausedAt = performance.now();
-    if (!paused && pausedAt !== undefined) {
-      if (started && mode === "boot")
-        bootStart += (performance.now() - pausedAt) / 1000;
-      pausedAt = undefined;
-    }
-    audio.setHostPaused(paused);
-  };
-  window.addEventListener("rhine-wallpaper-pause", pause);
-  apply(wallpaperHost()?.properties ?? {});
-  pause();
-}
-if (isWallpaper) {
-  workbench = new Workbench(
-    $("#stage"),
-    () => {
-      if (ready && mode !== "boot") setMode("archive");
-    },
-    (lane) => {
-      if (ready && !modal) select(columnMemory[lane]);
-    },
-  );
-  workbench.setMotion(prefs.motion);
-  playground = new ArchivePlayground(
-    $("#stage"),
-    () => scene,
-    () => ({
-      enabled: !!workbench?.enabled && mode === "archive" && ready,
-      paused:
-        Boolean(modal) ||
-        modalClosing ||
-        Boolean(wallpaperHost()?.paused) ||
-        document.hidden,
-      reduced: motionIsReduced(),
-    }),
-    (value) => {
-      musicSuppressed = value;
-      configureAudio();
-    },
-    () => audio.play("tick"),
-  );
-  wallpaperEffects = new WallpaperEffects($("#stage"), () => scene);
-  document.addEventListener("click", (event) => {
-    const button = (event.target as Element).closest<HTMLElement>(
-      "[data-workbench-mode]",
-    );
-    if (button)
-      closeModal(() => {
-        workbench!.setEnabled(button.dataset.workbenchMode === "workbench");
-      });
-  });
-}
 void start();
 enableGamepad();
 const ARCHIVE_HINT: Record<"keyboard" | "gamepad", string> = {
@@ -1763,7 +1422,6 @@ Object.assign(window, {
     select: (i: number) => select(i),
     stats: () => ({
       ...scene?.getStats(),
-      threeState,
       fps: Math.round(fps),
       mode,
       ready,
@@ -1778,7 +1436,6 @@ Object.assign(window, {
       selected: records[selected].id,
       saved: [...saved],
       audio: audio.stats(),
-      wallpaper: isWallpaper ? wallpaperHost() : null,
     }),
   },
 });

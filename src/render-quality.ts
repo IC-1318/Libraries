@@ -58,6 +58,19 @@ export const qualityPresets = {
   },
 } as const satisfies Record<string, RenderQuality>;
 export type QualityPreset = keyof typeof qualityPresets;
+
+/** Optional low-end override; independent of the saved custom quality. */
+export const superPerformanceQuality: RenderQuality = {
+  scale: 60,
+  pixelRatio: 1,
+  antialias: "off",
+  shadows: 0,
+  aoSamples: 0,
+  aoResolution: 0.5,
+  depthOfField: 0,
+  transmission: 0.25,
+  anisotropy: 2,
+};
 export const presetLabels: Record<QualityPreset, string> = {
   performance: "性能",
   original: "原始",
